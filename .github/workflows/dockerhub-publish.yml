@@ -1,0 +1,78 @@
+name: Build and Push to Docker Hub
+
+on:
+  # Check for upstream image updates once a day at midnight UTC
+  schedule:
+    - cron: '0 0 * * *'
+  # Build on any commit pushed to main
+  push:
+    branches:
+      - main
+  # Manual trigger button in GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------------
+      # 1. Check if upstream image (ghcr.io/hkuds/deeptutor:latest) has changed
+      # ----------------------------------------------------------------------
+      - name: Check Upstream Digest
+        id: check
+        run: |
+          UPSTREAM_IMAGE="docker://ghcr.io/hkuds/deeptutor:latest"
+          MY_IMAGE="docker://${{ secrets.DOCKERHUB_USERNAME }}/deeptutor-docling:latest"
+
+          echo "🔍 Fetching latest digest from upstream ($UPSTREAM_IMAGE)..."
+          UPSTREAM_DIGEST=$(skopeo inspect --override-os linux --override-arch amd64 "$UPSTREAM_IMAGE" | jq -r '.Digest')
+          echo "Upstream digest: $UPSTREAM_DIGEST"
+          echo "upstream_digest=$UPSTREAM_DIGEST" >> "$GITHUB_OUTPUT"
+
+          # Fetch stored upstream digest from existing Docker Hub image label
+          echo "🔍 Checking recorded digest on current image ($MY_IMAGE)..."
+          CURRENT_DIGEST=$(skopeo inspect --override-os linux --override-arch amd64 "$MY_IMAGE" 2>/dev/null | jq -r '.Labels["upstream.digest"] // empty')
+          echo "Recorded digest: $CURRENT_DIGEST"
+
+          # Determine whether build is required
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "push" ]; then
+            echo "🚀 Triggered by ${{ github.event_name }} — proceeding with build."
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          elif [ "$UPSTREAM_DIGEST" != "$CURRENT_DIGEST" ]; then
+            echo "✨ New upstream image detected! Proceeding with build."
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "✅ Upstream image has not changed ($UPSTREAM_DIGEST). Skipping build."
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ----------------------------------------------------------------------
+      # 2. Build and push image only when new image detected or manual trigger
+      # ----------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.needs_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: steps.check.outputs.needs_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (AMD64)
+        if: steps.check.outputs.needs_build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/deeptutor-docling:latest
+          labels: |
+            upstream.digest=${{ steps.check.outputs.upstream_digest }}
