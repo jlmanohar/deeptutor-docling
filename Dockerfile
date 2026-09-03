@@ -10,9 +10,10 @@ FROM ghcr.io/hkuds/deeptutor:latest
 # Switch to root to configure environment and install packages
 USER root
 
-# 1. Install fontconfig (required by docling_parse C++ PDF renderer)
+# 1. Install fontconfig and build tools (build-essential required for C extensions like webrtcvad)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fontconfig \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Set HOME & XDG paths to /home/deeptutor to prevent docling from accessing /root
